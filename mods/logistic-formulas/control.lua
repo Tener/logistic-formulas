@@ -67,6 +67,7 @@ script.on_event(defines.events.on_gui_selection_state_changed, formula_gui.on_se
 script.on_event(defines.events.on_gui_elem_changed, formula_gui.on_elem_changed)
 script.on_event(defines.events.on_gui_confirmed, formula_gui.on_confirmed)
 script.on_event(defines.events.on_gui_selected_tab_changed, formula_gui.on_tab_changed)
+script.on_event(defines.events.on_runtime_mod_setting_changed, formula_gui.on_setting_changed)
 
 local function toggle_formulas(event)
   formula_gui.toggle(game.get_player(event.player_index))
@@ -113,5 +114,9 @@ remote.add_interface("logistic-formulas", {
   program_status = function(force) return program.sheets(game.forces[force])[1].status end,
   focus_search = function(player_index) formula_gui.focus_search(game.get_player(player_index)) end,
   formulas_open = function(player_index) formula_gui.open(game.get_player(player_index)) end,
+  -- Only this mod may write its settings.
+  set_window_size = function(player_index, value)
+    game.get_player(player_index).mod_settings["logf-window-size"] = {value = value}
+  end,
   gui_event = function(kind, event) formula_gui[kind](event) end,
 })

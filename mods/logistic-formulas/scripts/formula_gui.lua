@@ -102,8 +102,9 @@ end
 --   sheet = id of the sheet shown, collapsed = {["sheet id/def name"] = true},
 --   pinned = boolean: the window stays open while other windows open and close,
 --   location = where the window was last closed,
---   size = {width, height} of the window's content,
---   maximized = boolean: the window fills the screen; location and size are kept for later,
+--   size = {width, height} of the window's content, or nil for the size setting's,
+--   maximized = boolean: the window fills the screen; location and size are kept for later.
+--     Nil until the window opens, which sets it from the size setting,
 --   step = {sheet = id, name = def name, path = node path}: the selected step, shown above the
 --     tree with the actions on it, or nil,
 --   clipboard = a copied node,
@@ -883,7 +884,12 @@ local function text_window(player)
   return player.gui.screen[TEXT_WINDOW]
 end
 
-local DEFAULT_SIZE = {width = 1040, height = 620}
+-- Sizes of the size setting, one Larger click apart. A maximized window restores to large.
+local SIZES = {
+  small = {width = 1040, height = 620},
+  medium = {width = 1196, height = 713},
+  large = {width = 1375, height = 819},
+}
 local MIN_SIZE = {width = 560, height = 360}
 -- Below this width, a definition's contents go under its formula instead of beside it.
 local NARROW = 900
@@ -893,11 +899,19 @@ local CHROME = {width = 28, height = 104}
 
 -- Sizes the window's content from the player's chosen size, kept inside the screen, or
 -- to the whole screen when maximized.
+local function size_setting(player)
+  return player.mod_settings["logf-window-size"].value
+end
+
+local function chosen_size(player)
+  return ui(player).size or SIZES[size_setting(player)] or SIZES.large
+end
+
 function apply_size(player)
   local w = window(player)
   if not w then return end
   local state = ui(player)
-  local size = state.size or DEFAULT_SIZE
+  local size = chosen_size(player)
   local scale = player.display_scale
   local screen_w = math.floor(player.display_resolution.width / scale)
   local screen_h = math.floor(player.display_resolution.height / scale)
@@ -1188,6 +1202,7 @@ function fgui.open(player)
   destroy_window(player)
   local state = ui(player)
   state.item_edit = nil
+  if state.maximized == nil then state.maximized = size_setting(player) == "maximized" end
   local w = player.gui.screen.add{type = "frame", name = WINDOW, direction = "vertical"}
   if state.location then w.location = state.location else w.auto_center = true end
   local titlebar = w.add{type = "flow", direction = "horizontal"}
@@ -1538,7 +1553,7 @@ end
 
 local function resize(player, factor)
   local state = ui(player)
-  local size = state.size or DEFAULT_SIZE
+  local size = chosen_size(player)
   state.size = {width = math.floor(size.width * factor), height = math.floor(size.height * factor)}
   apply_size(player)
   -- Store what was actually applied, so a clamped size does not keep growing out of view.
@@ -1558,6 +1573,17 @@ end
 -- A maximized window follows the screen; others stay inside it.
 function fgui.on_display_changed(event)
   apply_size(game.get_player(event.player_index))
+end
+
+-- A new size setting replaces the size, place and maximized state the player left.
+function fgui.on_setting_changed(event)
+  if event.setting ~= "logf-window-size" or not event.player_index then return end
+  local player = game.get_player(event.player_index)
+  local w = window(player)
+  if w then w.destroy() end
+  local state = ui(player)
+  state.size, state.location, state.maximized = nil, nil, nil
+  if w then fgui.open(player) end
 end
 
 function CLICK.larger(player) resize(player, 1.15) end

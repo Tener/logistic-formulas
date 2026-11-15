@@ -914,6 +914,11 @@ CASES.window = function(tick)
   local w = assert(player.gui.screen.logf_window, "corner button opens the window")
   assert(player.opened == w, "an unpinned window is the opened GUI")
   assert(player.is_shortcut_toggled("logf-formulas"), "shortcut shows the window is open")
+  -- The window opens maximized and restores to the large size.
+  assert(w.children[1].maximize.toggled, "the window opens maximized")
+  fire(w.children[1].maximize)
+  w = player.gui.screen.logf_window
+  assert(editor_in(w).style.maximal_width == 1375, "a maximized window restores to the large size")
   fire(button)
   assert(not player.gui.screen.logf_window, "corner button closes the window")
   assert(not player.is_shortcut_toggled("logf-formulas"), "shortcut shows the window is closed")
@@ -986,6 +991,12 @@ CASES.window = function(tick)
 
   fire(w.children[1].pin)
   assert(player.opened == w, "unpinning makes the window the opened GUI again")
+
+  -- A new size setting replaces the size the player left.
+  call("set_window_size", player.index, "small")
+  w = player.gui.screen.logf_window
+  assert(editor_in(w).style.maximal_width == 1040 and not w.children[1].maximize.toggled, "the window takes the size setting")
+  player.opened = w
   player.opened = nil
   assert(not player.gui.screen.logf_window, "Escape closes it again")
   -- Another window closes an unpinned one also while its selection is the opened GUI.

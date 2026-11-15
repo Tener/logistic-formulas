@@ -14,7 +14,7 @@ and runtime output are isolated under `.factorio-test/`.
 | `formulas` | All functions, nesting, errors, source updates, quality research unlocks |
 | `editor` | Tree widgets, live previews, step inspector, multi-line text editor |
 | `docs` | Documented examples and guide snippets evaluate as shown; every reference text has its locale keys |
-| `window` | Corner toggle, resizing, maximizing, pinning, persisted position/size |
+| `window` | Corner toggle, resizing, maximizing, pinning, persisted position/size, size setting |
 | `network` | Network reads by name and surface/position, `storage`/`providers`/`all` scopes |
 | `settings` | `max`, `import_from`, `request_from`, `min_delivery` propagation across all operators |
 | `recipes` | Recipe ingredients, average probabilistic products, recipe chooser |
