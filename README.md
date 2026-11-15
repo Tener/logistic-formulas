@@ -12,6 +12,8 @@ Each formula computes one logistic group from constants, other groups, logistic 
 (def "to orbit"  (import-from (set-max (group "mall") (multiply 2 (group "mall"))) nauvis))
 ```
 
+![The formula editor: each definition with its group's contents, its formula as a tree and as text, and a function's tooltip](docs/images/editor.png)
+
 The reference is in the game. Open the editor from the shortcut bar, the corner button or Ctrl+Shift+G (by default). Hovering a function there shows its syntax, parameters and an example, and the **?** beside it opens its Factoriopedia page. The **Logistic formulas** Factoriopedia tab also holds the guide (sheets and updates, the language, request settings, the editor, and patterns for malls and space platforms), and **Tips and tricks** has a short introduction.
 
 ## Development
