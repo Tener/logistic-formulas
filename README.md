@@ -22,7 +22,7 @@ lists the test requirements and cases; [Releases](docs/releases.md) describes ho
 | Command | Purpose |
 | --- | --- |
 | `make test` | Run the headless test suite. |
-| `make play` | Open a sandbox with sample formulas, a bot-fed factory, and an orbital platform testbed. |
+| `make play` | Open a sandbox with sample formulas, a sheet with the examples above, a bot-fed factory, and an orbital platform testbed. |
 | `make package` | Build `dist/logistic-formulas_<version>.zip`. |
 | `make install` | Build and copy the zip into Factorio's mods directory. |
 

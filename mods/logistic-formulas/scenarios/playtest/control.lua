@@ -1,6 +1,6 @@
--- Sandbox for trying the mod by hand: everything researched, sample formulas, a small
--- bot-fed factory west of the spawn, and with Space Age a rocket silo south of it supplying
--- a platform in orbit.
+-- Sandbox for trying the mod by hand: everything researched, sample formulas, a sheet with
+-- the README's examples, a small bot-fed factory west of the spawn, and with Space Age a
+-- rocket silo south of it supplying a platform in orbit.
 
 -- The logistic group a formula definition writes, with the configured prefix.
 local function formula_group(name) return remote.call("logistic-formulas", "group_name", name) end
@@ -25,7 +25,7 @@ local function prepare(surface)
   surface.set_tiles(tiles)
 end
 
-local NETWORK = "Demo network"
+local NETWORK = "Main"
 
 -- Requester chest -> inserter -> assembler -> inserter -> passive provider, left to right.
 -- The requester asks for the logistic group named after the line.
@@ -62,6 +62,8 @@ local function build_factory(surface, force)
   for i, item in ipairs{"iron-plate", "copper-plate", "iron-plate"} do
     make("storage-chest", {-42.5 + i, -8.5}).insert{name = item, count = 4800}
   end
+  -- Some of the mall in stock, so the README sheet's "missing" is a real difference.
+  make("storage-chest", {-38.5, -8.5}).insert{name = "transport-belt", count = 120}
 
   storage.outputs = {
     gears = line(make, 0.5, "iron-gear-wheel", "gear line"),
@@ -118,9 +120,18 @@ local PROGRAM = [[
 (def "cable line" {copper-plate 100})
 (def "circuit line" (multiply 40 {iron-plate 1 copper-cable 3}))
 
-(def "demo stock" (network "Demo network"))
-(def "demo products" (keep (network "Demo network" providers) iron-gear-wheel electronic-circuit))
+(def "demo stock" (network "Main"))
+(def "demo products" (keep (network "Main" providers) iron-gear-wheel electronic-circuit))
 (def "demo shortfall" (keep-positive (subtract {iron-gear-wheel 500 electronic-circuit 500} (group "demo products"))))
+]]
+
+-- The README's examples, on a sheet of their own for screenshots.
+local README_PROGRAM = [[
+(def "mall"      {transport-belt 200 fast-inserter 50 pipe:rare 10})
+(def "mall rare" (quality-up (group "mall") 2))
+(def "missing"   (keep-positive (subtract (group "mall") (network "Main" storage))))
+(def "line x4"   (round-to-stacks (multiply 4 (ingredients electronic-circuit 1k))))
+(def "to orbit"  (import-from (set-max (group "mall") (multiply 2 (group "mall"))) nauvis))
 ]]
 
 script.on_event(defines.events.on_player_created, function(event)
@@ -138,6 +149,10 @@ script.on_event(defines.events.on_player_created, function(event)
   player.insert{name = "requester-chest", count = 10}
   local ok, err = remote.call("logistic-formulas", "set_program", player.force.name, PROGRAM .. (space and SPACE_PROGRAM or ""))
   assert(ok, err)
+  local readme = assert(remote.call("logistic-formulas", "add_sheet", player.force.name))
+  ok, err = remote.call("logistic-formulas", "set_sheet_program", player.force.name, readme, README_PROGRAM)
+  assert(ok, err)
+  storage.readme = readme
   player.print({"logf-ui.playtest-hint"})
   if space then
     player.print("A rocket silo south of the factory supplies \"" .. PLATFORM .. "\" in orbit; open it from the remote view.")
@@ -159,6 +174,9 @@ script.on_event(defines.events.on_tick, function(event)
     assert(fresh == 0, fresh .. " recipes flagged as newly researched")
     for i, status in ipairs(remote.call("logistic-formulas", "program_status", "player")) do
       assert(not status.error, "sandbox formula " .. i .. ": " .. tostring(status.error))
+    end
+    for i, status in ipairs(remote.call("logistic-formulas", "sheet_status", "player", storage.readme)) do
+      assert(not status.error, "README formula " .. i .. ": " .. tostring(status.error))
     end
     print("[TEST] playtest sandbox: passed")
     script.finish_test(true)
