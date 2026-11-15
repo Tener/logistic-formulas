@@ -88,6 +88,20 @@ def center_fg(fg, size=SIZE, dx=0, dy=0):
     return out
 
 
+def history_arrow(color, redo):
+    """A curved arrow turning back to the left (undo), or mirrored to the right (redo)."""
+    img = canvas(32)
+    d = ImageDraw.Draw(img)
+    r, cx, cy, w = 9, 16, 18, 3
+    d.arc([(cx - r) * SCALE, (cy - r) * SCALE, (cx + r) * SCALE, (cy + r) * SCALE], 180, 405,
+          fill=color, width=w * SCALE)
+    # Arrowhead at the arc's left end, pointing down.
+    x = cx - r + w / 2
+    d.polygon([(x * SCALE, (cy + 7) * SCALE), ((x - 6) * SCALE, (cy - 1) * SCALE), ((x + 6) * SCALE, (cy - 1) * SCALE)],
+              fill=color)
+    return img.transpose(Image.FLIP_LEFT_RIGHT) if redo else img
+
+
 def wrap(color):
     """f(·): wrap a node in a function."""
     fg = canvas(32)
@@ -492,6 +506,8 @@ for grow, name in [(True, "larger"), (False, "smaller")]:
 finish(maximize(WHITE), 32, "maximize-white")
 finish(maximize((30, 30, 30, 255)), 32, "maximize-black")
 finish(wrap((0, 0, 0, 255)), 32, "wrap")
+finish(history_arrow((0, 0, 0, 255), False), 32, "undo")
+finish(history_arrow((0, 0, 0, 255), True), 32, "redo")
 for sz in (56, 24):
     finish(shortcut(sz), sz, f"shortcut-x{sz}")
 mod_icon = Image.open(os.path.join(TOOLS, "mod-icon.png"))

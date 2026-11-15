@@ -20,6 +20,7 @@ and runtime output are isolated under `.factorio-test/`.
 | `recipes` | Recipe ingredients, average probabilistic products, recipe chooser |
 | `guard` | Group prefixes, chat warning & automatic undo of manual edits to owned groups |
 | `sheets` | Multi-sheet tabs, prefix conflict rules, cross-sheet isolation |
+| `history` | Undo and redo per sheet, change descriptions, merged typing, prefix restores, history cap |
 | `save`, `reload`, `reload-graphics` | Persistence of sheets, prefixes, and formulas across save/load; loading with graphics |
 | `playtest`, `demo-factory`, `demo-space` | End-to-end sandbox factory and orbital platform delivery scenarios |
 

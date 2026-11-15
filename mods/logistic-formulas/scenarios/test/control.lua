@@ -2,6 +2,7 @@
 local sexp = require("__logistic-formulas__/scripts/sexp")
 local lang = require("__logistic-formulas__/scripts/lang")
 local docs = require("__logistic-formulas__/scripts/docs")
+local changes = require("__logistic-formulas__/scripts/changes")
 local mod_gui = require("mod-gui")
 
 local function finish(label)
@@ -1052,6 +1053,11 @@ CASES.reload = function(tick)
   elseif elapsed == 40 then
     expect_group("A/up", {["item/iron-plate/uncommon"] = 7})
     expect_group("[virtual-signal=signal-F] double", {["item/iron-plate/normal"] = 14})
+    -- The undo history is saved too: the last step set the prefix "A/".
+    local player = game.get_player(1)
+    call("formulas_open", player.index)
+    local undo = editor_in(player.gui.screen.logf_window).bar.undo
+    assert(undo.enabled and undo.tooltip:find("change the prefix", 1, true) and undo.tooltip:find("→ A/", 1, true), undo.tooltip)
     finish("save/load of sheets and formulas")
   end
 end
@@ -1201,6 +1207,199 @@ CASES.sheets = function(tick)
   assert(#pane.tabs == 2, "its tab is gone")
   assert(not editor_in(player.gui.screen.logf_window).bar.delete.enabled, "the last sheet cannot be deleted")
   finish("sheets")
+end
+
+-- Undo and redo: per sheet, one step per edit, typing in a field as one step, described in
+-- the buttons' tooltips.
+CASES.history = function(tick)
+  if tick ~= 1 then return end
+  storage.surface = lab()
+  local player = game.get_player(1)
+  for _, q in ipairs{"uncommon", "rare", "epic", "legendary"} do game.forces.player.unlock_quality(q) end
+
+  -- What two states of a sheet differ in, as the tooltips list it.
+  local function defs(text)
+    local out = {}
+    for i, form in ipairs(assert(sexp.parse(text))) do out[i] = {name = form[2].str, expr = form[3]} end
+    return out
+  end
+  local function describe(a, b, prefix_a, prefix_b)
+    local out = {}
+    for i, c in ipairs(changes.describe({prefix = prefix_a or "", defs = defs(a)}, {prefix = prefix_b or "", defs = defs(b)})) do
+      local parts = {c.kind}
+      if c.kind == "prefix" then parts[2] = c.old .. ">" .. c.new
+      elseif c.kind == "rename" then parts[2] = c.old_name .. ">" .. c.name
+      else parts[2] = c.name end
+      if c.kind ~= "prefix" then
+        if c.old then parts[#parts + 1] = sexp.print(c.old) end
+        if c.new then parts[#parts + 1] = sexp.print(c.new) end
+      end
+      if c.kind == "move" then parts[#parts + 1] = c.from .. ">" .. c.to end
+      out[i] = table.concat(parts, " ")
+    end
+    return table.concat(out, "; ")
+  end
+  local A, B = '(def "a" {iron-plate 10})', '(def "b" (quality-up (group "a") 1))'
+  local function check(a, b, want, prefix_a, prefix_b)
+    local got = describe(a, b, prefix_a, prefix_b)
+    assert(got == want, "describe: want " .. want .. ", got " .. got)
+  end
+  check(A .. B, A .. '(def "b" (quality-up (group "a") 2))', 'change b (quality-up (group "a") 1) (quality-up (group "a") 2)')
+  check(A .. '(def "b" (multiply 2 (quality-up (group "a") 1)))', A .. '(def "b" (multiply 2 (quality-up (group "x") 1)))',
+    'change b (group "a") (group "x")')
+  check(A .. '(def "b" (multiply 2 (group "a")))', A .. '(def "b" (multiply 3 (group "x")))',
+    'change b (multiply 2 (group "a")) (multiply 3 (group "x"))')
+  check(A, A .. B, 'add b (quality-up (group "a") 1)')
+  check(A .. B, A, 'remove b (quality-up (group "a") 1)')
+  check(A .. B, A .. '(def "c" (quality-up (group "a") 1))', "rename b>c")
+  check(A .. B, A .. '(def "c" (quality-up (group "a") 2))', 'rename b>c (quality-up (group "a") 1) (quality-up (group "a") 2)')
+  check(A .. B, B .. A, "move b 2>1")
+  check(A .. B .. '(def "c" {coal 1})', '(def "c" {coal 1})' .. A .. B, "move c 3>1")
+  check(A, A, "prefix x/>y/", "x/", "y/")
+  check(A .. B, A .. B, "")
+
+  set_program('(def "a" {iron-plate 10})')
+  call("formulas_open", player.index)
+  local function bar() return editor_in(player.gui.screen.logf_window).bar end
+  local function fire(kind, element) call("gui_event", kind, {element = element, player_index = player.index}) end
+  local function el(match)
+    return assert(find(editor_in(player.gui.screen.logf_window).scroll.tree, match), "no element " .. serpent.line(match))
+  end
+  local function choose(match, pattern)
+    local element = el(match)
+    for i, name in ipairs(element.items) do
+      if name:find(pattern) then
+        element.selected_index = i
+        return fire("on_selection", element)
+      end
+    end
+    error("no option " .. pattern)
+  end
+  local function undo() fire("on_click", bar().undo) end
+  local function redo() fire("on_click", bar().redo) end
+  local function text() return call("program_text", "player") end
+  local function tip(button, part) return bar()[button].tooltip:find(part, 1, true) end
+
+  -- The test's empty prefix and its program are the first steps.
+  assert(bar().undo.enabled and tip("undo", "apply the sheet text") and tip("undo", "added"), bar().undo.tooltip)
+  assert(not bar().redo.enabled and bar().redo.tooltip == "Nothing to redo", "nothing to redo yet")
+
+  -- One step per edit, each named with what it changed.
+  fire("on_click", el{logf = "def-new"})
+  choose({logf = "group-name", def = 2, path = {}}, "^a$")
+  choose({logf = "function", def = 2, path = {}}, "quality%-up$")
+  assert(tip("undo", "change a function") and tip("undo", "quality-up"), bar().undo.tooltip)
+  expect_group("new group", {["item/iron-plate/uncommon"] = 10})
+
+  -- Typing in one field is one step.
+  local field = el{logf = "number", def = 2, path = {3}}
+  for _, typed in ipairs{"2", "3"} do
+    field.text = typed
+    fire("on_text_changed", field)
+  end
+  fire("on_confirmed", field)
+  expect_group("new group", {["item/iron-plate/epic"] = 10})
+  assert(tip("undo", "change a number"), bar().undo.tooltip)
+  undo()
+  assert(text():find('(quality-up (group "a")))', 1, true), "one undo reverts all the typing: " .. text())
+  expect_group("new group", {["item/iron-plate/uncommon"] = 10})
+  assert(bar().redo.enabled and tip("redo", "change a number"), bar().redo.tooltip)
+  redo()
+  assert(text():find('(quality-up (group "a") 3)', 1, true), "redo repeats it: " .. text())
+
+  -- Undo goes back through every step, and redo forward again.
+  local steps = {}
+  while bar().undo.enabled do
+    steps[#steps + 1] = text()
+    undo()
+  end
+  assert(#steps == 6, "prefix, program, new definition, group, function and number are six steps, not " .. #steps)
+  assert(text() == "" and call("sheet_prefix", "player", call("sheet_ids", "player")[1]) == "[virtual-signal=signal-F] ",
+    "back to the empty sheet with its first prefix")
+  assert(not group("a") and not group("new group"), "groups no formula computes any more are deleted")
+  for i = #steps, 1, -1 do
+    redo()
+    assert(text() == steps[i], "redo step " .. i .. ": " .. text())
+  end
+  assert(not bar().redo.enabled, "all redone")
+  expect_group("new group", {["item/iron-plate/epic"] = 10})
+
+  -- A new edit after an undo drops the steps to redo.
+  undo()
+  fire("on_click", el{logf = "def-up", def = 2})
+  assert(not bar().redo.enabled, "a new edit clears redo")
+  assert(tip("undo", "moved from place"), bar().undo.tooltip)
+  undo()
+  assert(text():find('^%(def "a"'), "undoing the move")
+
+  -- A deleted definition comes back with its group.
+  fire("on_click", el{logf = "def-delete", def = 2})
+  fire("on_click", el{logf = "def-delete", def = 2})
+  assert(not group("new group") and tip("undo", "deleted"), bar().undo.tooltip)
+  undo()
+  expect_group("new group", {["item/iron-plate/uncommon"] = 10})
+
+  -- Undo clears a selection, which may point at a node that is gone.
+  fire("on_click", el{logf = "result", def = 2, path = {2}})
+  assert(editor_in(player.gui.screen.logf_window).step.visible, "a step is selected")
+  undo()
+  assert(not editor_in(player.gui.screen.logf_window).step.visible, "undo clears the selection")
+  redo()
+
+  -- Applying the sheet text is one step, and the text window follows undo.
+  fire("on_click", find(bar(), {logf = "text-open"}))
+  local view = player.gui.screen.logf_text.text_view
+  fire("on_click", view.bar.edit)
+  view.box.text = '(def "only" {coal 5})'
+  fire("on_click", find(view, {logf = "apply"}))
+  assert(tip("undo", "apply the sheet text") and tip("undo", "deleted") and tip("undo", "added"), bar().undo.tooltip)
+  undo()
+  assert(view.view.code.caption:find("new group", 1, true), "the text window follows undo")
+  fire("on_click", find(player.gui.screen.logf_text, {logf = "text-close"}))
+
+  -- A prefix change is a step; restoring a prefix another sheet has taken since is refused.
+  assert(call("set_prefix", "P/"))
+  expect_group("P/a", {["item/iron-plate/normal"] = 10})
+  undo()
+  expect_group("a", {["item/iron-plate/normal"] = 10})
+  assert(not group("P/a"), "the group under the undone prefix is deleted")
+  redo()
+  assert(call("set_prefix", "Q/"))
+  local first = call("sheet_ids", "player")[1]
+  local second = call("add_sheet", "player")
+  local ok, err = call("set_sheet_program", "player", second, '(def "z" {coal 1})')
+  assert(ok, err)
+  call("formulas_open", player.index)
+  local function show(index)
+    local pane = player.gui.screen.logf_window.children[2].pane
+    pane.selected_tab_index = index
+    fire("on_tab_changed", pane)
+  end
+  show(2)
+  fire("on_click", bar().prefix_row.edit)
+  bar().prefix_row.field.text = "P/"
+  fire("on_confirmed", bar().prefix_row.field)
+  assert(call("sheet_prefix", "player", second) == "P/", "the second sheet takes P/")
+  show(1)
+  undo()
+  assert(call("sheet_prefix", "player", first) == "Q/", "undo is refused: the prefix is taken")
+  assert(bar().undo.enabled, "the step stays for later")
+
+  -- Each sheet has its own history.
+  show(2)
+  undo()
+  assert(call("sheet_prefix", "player", second) ~= "P/" and call("sheet_prefix", "player", first) == "Q/",
+    "undo in the second sheet changes only the second sheet")
+
+  -- The history is capped.
+  for i = 1, 60 do call("set_sheet_program", "player", second, '(def "z" {coal ' .. i .. '})') end
+  local count = 0
+  while bar().undo.enabled do
+    undo()
+    count = count + 1
+  end
+  assert(count == 50, "50 steps kept, not " .. count)
+  finish("history")
 end
 
 -- Documentation: every example gives the result it shows, every guide snippet evaluates, and

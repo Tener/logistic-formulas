@@ -45,6 +45,8 @@ data:extend{
   icon("logf-maximize-white", "maximize-white"),
   icon("logf-maximize-black", "maximize-black"),
   icon("logf-wrap", "wrap"),
+  icon("logf-undo", "undo"),
+  icon("logf-redo", "redo"),
   {
     -- Follows the player's binding for the game's own search (Ctrl+F by default).
     type = "custom-input",

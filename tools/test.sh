@@ -21,7 +21,7 @@ run() {
   cp .factorio-test/last-write.log "tmp/test-logs/$name.log"
 }
 
-for name in sexp formulas editor window network settings recipes guard sheets docs; do
+for name in sexp formulas editor window network settings recipes guard sheets history docs; do
   run "$name" mods logistic-formulas/test "$name" 1000
 done
 # Remove the old save so a failed save test cannot be masked by a prior run's file.

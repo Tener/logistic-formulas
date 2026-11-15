@@ -21,17 +21,58 @@ local SECTIONS_PER_OWNER = 100
 --   sources = {[group name] = signature}   groups read from outside the program
 --   last = {[def name] = filters}          what each definition last produced
 --   dynamic = boolean                      reads a logistic network
+--   history = {
+--     undo = {entry, ...}, redo = {entry, ...},   most recent last
+--     saved = snapshot of the sheet as last recorded,
+--     merge = key of the last change, if the next one with that key joins it,
+--     version = number, raised on every change to the history,
+--   }
 -- }
+-- snapshot = {prefix = string, defs = copy of defs, text = the defs as text}
+-- entry = snapshot plus {label = string}: the sheet before (undo) or after (redo) that change
 program.DEFAULT_PREFIX = "[virtual-signal=signal-F] "
 -- Letters tried, in order, for the prefix icon of a new sheet.
 local LETTERS = "FGHJKLMNPQRSTUVWXYZABCDE"
 
+-- Changes kept for undo, per sheet.
+program.HISTORY = 50
+
+local function copy(v)
+  if type(v) ~= "table" then return v end
+  local out = {}
+  for k, x in pairs(v) do out[k] = copy(x) end
+  return out
+end
+
+local function snapshot(sheet)
+  return {prefix = sheet.prefix, defs = copy(sheet.defs), text = sexp.print_program(program.forms_from_defs(sheet.defs))}
+end
+
+local function same(a, b) return a.prefix == b.prefix and a.text == b.text end
+
+local function new_history(sheet)
+  sheet.history = {undo = {}, redo = {}, saved = snapshot(sheet), version = 0}
+  return sheet.history
+end
+
+-- A sheet's history. Saves from before undo get theirs in program.init; this covers a sheet
+-- that missed it, starting from its current state.
+local function history(sheet)
+  return sheet.history or new_history(sheet)
+end
+
 function program.init()
   storage.programs = storage.programs or {}
+  for _, record in pairs(storage.programs) do
+    for _, sheet in ipairs(record.sheets) do
+      if not sheet.history then new_history(sheet) end
+    end
+  end
 end
 
 local function new_sheet(record, prefix)
   local sheet = {id = record.next_id, prefix = prefix, defs = {}, status = {}, owners = {}, sources = {}, last = {}}
+  new_history(sheet)
   record.next_id = record.next_id + 1
   record.sheets[#record.sheets + 1] = sheet
   return sheet
@@ -73,6 +114,7 @@ function program.set_prefix(force, sheet, prefix)
   local problem = program.prefix_problem(force, sheet, prefix)
   if problem then return false, problem end
   sheet.prefix = prefix
+  program.record(sheet, "change the prefix")
   program.run(force)
   return true
 end
@@ -432,8 +474,77 @@ function program.set_text(force, sheet, text)
   local defs, err = program.parse_text(text)
   if not defs then return false, err end
   sheet.defs = defs
+  program.record(sheet, "apply the sheet text")
   program.run_sheet(force, sheet)
   if program.on_run then program.on_run(force) end
+  return true
+end
+
+-- Records the sheet's current state as an undoable change named `label`, if it changed.
+-- A change with the same `merge` key as the one before joins it, as typing in one field does.
+function program.record(sheet, label, merge)
+  local h = history(sheet)
+  local now = snapshot(sheet)
+  if same(now, h.saved) then return end
+  h.redo = {}
+  if not (merge and h.merge == merge and #h.undo > 0) then
+    local entry = h.saved
+    entry.label = label
+    h.undo[#h.undo + 1] = entry
+    if #h.undo > program.HISTORY then table.remove(h.undo, 1) end
+  end
+  h.saved, h.merge = now, merge
+  h.version = (h.version or 0) + 1
+end
+
+-- Records the changes of every sheet of a force.
+function program.record_all(force, label, merge)
+  for _, sheet in ipairs(program.sheets(force)) do program.record(sheet, label, merge) end
+end
+
+-- Ends the change being merged, so the next one is recorded on its own.
+function program.end_merge(sheet)
+  history(sheet).merge = nil
+end
+
+-- Changes whenever the history does, so its display is redrawn only then.
+function program.history_version(sheet)
+  return history(sheet).version or 0
+end
+
+-- The change undo or redo would revert or repeat: its label and the sheet before and after,
+-- as {prefix, defs}. Nil when there is none.
+function program.next_change(sheet, redo)
+  local h = history(sheet)
+  local list = redo and h.redo or h.undo
+  local entry = list[#list]
+  if not entry then return nil end
+  if redo then return {label = entry.label, before = h.saved, after = entry} end
+  return {label = entry.label, before = entry, after = h.saved}
+end
+
+-- Undoes the last change of a sheet, or redoes the last undone one. Returns true, or false
+-- and why not.
+function program.step_history(force, sheet, redo)
+  -- A change not recorded yet becomes the step to undo, rather than being lost.
+  program.record(sheet, "edit the sheet")
+  local h = history(sheet)
+  local from, to = redo and h.redo or h.undo, redo and h.undo or h.redo
+  local entry = from[#from]
+  if not entry then return false, redo and "nothing to redo" or "nothing to undo" end
+  if entry.prefix ~= sheet.prefix then
+    local problem = program.prefix_problem(force, sheet, entry.prefix)
+    if problem then return false, "the prefix \"" .. entry.prefix .. "\" cannot be restored: " .. problem end
+  end
+  table.remove(from)
+  local current = h.saved
+  current.label = entry.label
+  to[#to + 1] = current
+  sheet.prefix, sheet.defs = entry.prefix, copy(entry.defs)
+  entry.label = nil
+  h.saved, h.merge = entry, nil
+  h.version = (h.version or 0) + 1
+  program.run(force)
   return true
 end
 

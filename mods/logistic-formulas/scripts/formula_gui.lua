@@ -6,11 +6,12 @@ local sexp = require("scripts.sexp")
 local lang = require("scripts.lang")
 local program = require("scripts.program")
 local docs = require("scripts.docs")
+local changes = require("scripts.changes")
 
 local fgui = {}
 
 local WINDOW = "logf_window"
-local network_parts, apply_size, sheet_caption, build_editor, editable_label, sync_opened, fill_text
+local network_parts, apply_size, sheet_caption, build_editor, editable_label, sync_opened, fill_text, update_history
 local TOOLTIP_LINES = 40
 local INDENT = 24
 local DEF_DELETE_TOOLTIP = "Delete the definition (click twice). Groups still in use keep their last contents."
@@ -985,6 +986,62 @@ local function update_actions(actions, state, def_index, def, path)
   end
 end
 
+-- A formula in a change description: highlighted, or cut short as plain text when long.
+local CHANGE_WIDTH = 60
+local function change_form(form)
+  local plain = sexp.print(form)
+  if #plain <= CHANGE_WIDTH then return sexp.print(form, paint) end
+  local cut = CHANGE_WIDTH
+  -- Never end inside a UTF-8 character.
+  while cut > 1 and plain:byte(cut + 1) and plain:byte(cut + 1) >= 0x80 and plain:byte(cut + 1) < 0xC0 do cut = cut - 1 end
+  return plain:sub(1, cut) .. "…"
+end
+
+local CHANGE_LINES = 4
+
+-- What a change did, one line per definition it touched.
+local function describe_change(change)
+  local lines = {}
+  local function name(text) return "[font=default-semibold]" .. text .. "[/font]" end
+  for _, c in ipairs(changes.describe(change.before, change.after)) do
+    local line
+    if c.kind == "prefix" then line = "prefix: " .. c.old .. " → " .. c.new
+    elseif c.kind == "add" then line = "added " .. name(c.name) .. ": " .. change_form(c.new)
+    elseif c.kind == "remove" then line = "deleted " .. name(c.name)
+    elseif c.kind == "rename" then
+      line = "renamed " .. name(c.old_name) .. " → " .. name(c.name)
+      if c.old then line = line .. ": " .. change_form(c.old) .. " → " .. change_form(c.new) end
+    elseif c.kind == "change" then line = name(c.name) .. ": " .. change_form(c.old) .. " → " .. change_form(c.new)
+    elseif c.kind == "move" then line = name(c.name) .. ": moved from place " .. c.from .. " to " .. c.to end
+    lines[#lines + 1] = line
+  end
+  if #lines > CHANGE_LINES then
+    local more = #lines - CHANGE_LINES + 1
+    for i = #lines, CHANGE_LINES, -1 do lines[i] = nil end
+    lines[#lines + 1] = "and " .. more .. " more"
+  end
+  return table.concat(lines, "\n")
+end
+
+-- Enables the undo and redo buttons of a sheet bar, with tooltips naming the change.
+function update_history(bar, sheet)
+  local version = program.history_version(sheet)
+  if bar.undo.tags.version == version then return end
+  for _, redo in ipairs{false, true} do
+    local button = bar[redo and "redo" or "undo"]
+    button.tags = {logf = redo and "redo" or "undo", version = version}
+    local change = program.next_change(sheet, redo)
+    button.enabled = change ~= nil
+    if change then
+      local head = "[font=default-bold]" .. (redo and "Redo" or "Undo") .. ":[/font] " .. change.label
+      local body = describe_change(change)
+      button.tooltip = body ~= "" and head .. "\n" .. body or head
+    else
+      button.tooltip = redo and "Nothing to redo" or "Nothing to undo"
+    end
+  end
+end
+
 -- Fills a sheet tab: the bar, the step section and the tree.
 function build_editor(content, player, sheet)
   local state = ui(player)
@@ -1014,6 +1071,11 @@ function build_editor(content, player, sheet)
     "prefix", prefix_tooltip, {sheet = sheet.id}, 140)
   bar.add{type = "label", name = "prefix_example", caption = "→ " .. sheet.prefix .. "mall",
     tooltip = "How a group named \"mall\" is called in the game"}
+  local undo = bar.add{type = "sprite-button", name = "undo", style = "tool_button", sprite = "logf-undo", tags = {logf = "undo"}}
+  local redo = bar.add{type = "sprite-button", name = "redo", style = "tool_button", sprite = "logf-redo", tags = {logf = "redo"}}
+  undo.style.left_margin = 8
+  redo.style.right_margin = 8
+  update_history(bar, sheet)
   bar.add{type = "button", caption = "Edit as text", tooltip = "Edit this sheet as S-expressions, for bulk edits and sharing",
     tags = {logf = "text-open"}}
   bar.add{type = "button", caption = "?",
@@ -1466,10 +1528,17 @@ local function refresh_text(player)
   end
 end
 
+-- Brings a player's undo and redo buttons up to date.
+local function refresh_history(player)
+  local editor = editor_of(player)
+  if editor then update_history(editor.bar, sheet_of(player)) end
+end
+
 -- Rebuilds the tree for every player of the force with the window open.
 local function rebuild(force)
   for _, player in pairs(force.connected_players) do
     refresh_text(player)
+    refresh_history(player)
     local tree = tree_of(player)
     if tree then
       build_tree(tree, player)
@@ -1483,6 +1552,7 @@ end
 local function refresh_results(force)
   for _, player in pairs(force.connected_players) do
     refresh_text(player)
+    refresh_history(player)
     local tree = tree_of(player)
     if tree then
       local sheet = sheet_of(player)
@@ -1509,15 +1579,16 @@ local function refresh_results(force)
   end
 end
 
--- Structural edit: run the program and redraw.
-local function changed(force)
+-- Structural edit, recorded for undo as `label`: run the program and redraw.
+local function changed(force, label)
+  program.record_all(force, label)
   program.run(force)
   rebuild(force)
 end
 
 -- An edit that moves nodes: open signal editors and selections may point at another node
 -- now, so they close; `keep` is a player whose selection the edit moved along.
-local function reshaped(force, keep)
+local function reshaped(force, label, keep)
   for _, player in pairs(force.players) do
     local state = storage.formula_ui and storage.formula_ui[player.index]
     if state then
@@ -1525,7 +1596,7 @@ local function reshaped(force, keep)
       if player ~= keep then state.step = nil end
     end
   end
-  changed(force)
+  changed(force, label)
 end
 
 program.on_run = refresh_results
@@ -1646,7 +1717,7 @@ function CLICK.apply(player)
   win.tags = wt
   program.set_text(player.force, sheet, text.box.text)
   fill_text(player, false, "Applied.")
-  reshaped(player.force)
+  reshaped(player.force, "apply the sheet text")
 end
 
 function CLICK.revert(player)
@@ -1659,6 +1730,27 @@ CLICK["text-edit"] = function(player)
   if not program.sheet(player.force, text_window(player).tags.sheet) then return fgui.open_text(player) end
   fill_text(player, true)
 end
+
+-- Undo and redo act on the sheet shown. Selections and open editors may point at nodes that
+-- are gone, so they close for everyone.
+local function step_history(player, redo)
+  local sheet = sheet_of(player)
+  local prefix = sheet.prefix
+  local ok, problem = program.step_history(player.force, sheet, redo)
+  if not ok then
+    player.print("[color=yellow]Logistic formulas:[/color] " .. problem .. ".")
+    return
+  end
+  for _, other in pairs(player.force.players) do
+    local state = storage.formula_ui and storage.formula_ui[other.index]
+    if state then state.step, state.item_edit, state.sexp_edit, state.editing = nil, nil, nil, nil end
+  end
+  -- Tab captions show prefixes.
+  if sheet.prefix ~= prefix then fgui.reopen_all(player.force) else rebuild(player.force) end
+end
+
+function CLICK.undo(player) step_history(player, false) end
+function CLICK.redo(player) step_history(player, true) end
 
 CLICK["factoriopedia"] = function(player)
   player.open_factoriopedia_gui(prototypes.virtual_signal["logf-doc-overview"])
@@ -1698,7 +1790,7 @@ CLICK["sexp-apply"] = function(player, t, def, element)
   end
   def.expr = forms[1]
   ui(player).sexp_edit = nil
-  reshaped(player.force)
+  reshaped(player.force, "edit a formula as text")
 end
 
 local function set_all_collapsed(player, collapsed)
@@ -1727,21 +1819,21 @@ end
 -- function's place, the pasted step.
 function CLICK.wrap(player, t, def)
   set_node(def, t.path, {sexp.sym("sum"), node_at(def, t.path)})
-  reshaped(player.force, player)
+  reshaped(player.force, "wrap in a function", player)
 end
 
 function CLICK.unwrap(player, t, def)
   local form = node_at(def, t.path)
   if not can_unwrap_node(form) then return end
   set_node(def, t.path, form[primary_arg_index(form)])
-  reshaped(player.force, player)
+  reshaped(player.force, "unwrap", player)
 end
 
-function CLICK.remove(player, t, def)
+function CLICK.remove(player, t, def, _, _, label)
   if #t.path == 0 then return end
   local parent, index = parent_of(def, t.path)
   table.remove(parent, index)
-  reshaped(player.force)
+  reshaped(player.force, label or "remove a step")
 end
 
 function CLICK.copy(player, t, def)
@@ -1751,14 +1843,14 @@ end
 
 function CLICK.cut(player, t, def)
   ui(player).clipboard = deep_copy(node_at(def, t.path))
-  CLICK.remove(player, t, def)
+  CLICK.remove(player, t, def, nil, nil, "cut a step")
 end
 
 function CLICK.paste(player, t, def)
   local clipboard = ui(player).clipboard
   if clipboard == nil then return end
   set_node(def, t.path, deep_copy(clipboard))
-  reshaped(player.force, player)
+  reshaped(player.force, "paste", player)
 end
 
 -- Moves an argument and the selection with it.
@@ -1771,7 +1863,7 @@ local function shift(player, t, def, delta)
     path[#path] = index + delta
     state.step.path = path
   end
-  reshaped(player.force, player)
+  reshaped(player.force, "move an argument", player)
 end
 
 function CLICK.up(player, t, def) shift(player, t, def, -1) end
@@ -1781,7 +1873,7 @@ function CLICK.add_arg(player, t, def)
   local form = node_at(def, t.path)
   local spec = lang.functions[form[1].sym]
   form[#form + 1] = default_for(param_of(spec, #form))
-  changed(player.force)
+  changed(player.force, "add an argument")
 end
 CLICK["add-arg"] = CLICK.add_arg
 
@@ -1796,7 +1888,7 @@ local function remove_item(player, t, def)
   table.remove(form, t.pair + 1)
   table.remove(form, t.pair)
   edit_item(player, def, t.path, nil)
-  changed(player.force)
+  changed(player.force, "remove a signal")
 end
 
 -- A constant's slot: a click edits it (or stops editing it), a right-click removes it.
@@ -1818,11 +1910,11 @@ CLICK["item-done"] = function(player)
 end
 
 CLICK["def-up"] = function(player, t)
-  if move(sheet_of(player).defs, t.def, -1, 1) then changed(player.force) end
+  if move(sheet_of(player).defs, t.def, -1, 1) then changed(player.force, "move a definition") end
 end
 
 CLICK["def-down"] = function(player, t)
-  if move(sheet_of(player).defs, t.def, 1, 1) then changed(player.force) end
+  if move(sheet_of(player).defs, t.def, 1, 1) then changed(player.force, "move a definition") end
 end
 
 -- Deleting a definition takes a second click.
@@ -1835,21 +1927,21 @@ CLICK["def-delete"] = function(player, t, def, element)
     return
   end
   table.remove(sheet_of(player).defs, t.def)
-  changed(player.force)
+  changed(player.force, "delete a definition")
 end
 
 CLICK["def-duplicate"] = function(player, t, def)
   local p = sheet_of(player)
   local name = unique_name(p, def.name .. " copy")
   table.insert(p.defs, t.def + 1, {name = name, expr = deep_copy(def.expr)})
-  changed(player.force)
+  changed(player.force, "duplicate a definition")
 end
 
 CLICK["def-new"] = function(player)
   local p = sheet_of(player)
   local name = unique_name(p, "new group")
   p.defs[#p.defs + 1] = {name = name, expr = {sexp.sym("group"), sexp.str("")}}
-  changed(player.force)
+  changed(player.force, "add a definition")
 end
 
 local NEEDS_DEF = {wrap = true, unwrap = true, remove = true, up = true, down = true, cut = true, copy = true, paste = true,
@@ -1926,26 +2018,26 @@ function fgui.on_selection(event)
     local new = {sexp.sym("network"), table.unpack(choice.args)}
     if member ~= "all" then new[#new + 1] = sexp.sym(member) end
     set_node(def, t.path, new)
-    changed(player.force)
+    changed(player.force, "choose a network")
   elseif t.logf == "network-member" then
     local args = network_parts(node_at(def, t.path))
     local member = lang.members[element.selected_index]
     local new = {sexp.sym("network"), table.unpack(args)}
     if member ~= "all" then new[#new + 1] = sexp.sym(member) end
     set_node(def, t.path, new)
-    changed(player.force)
+    changed(player.force, "choose what a network read counts")
   elseif t.logf == "function" then
     local name = lang.order[element.selected_index]
-    if name then set_function(def, t.path, name, player.force); reshaped(player.force) end
+    if name then set_function(def, t.path, name, player.force); reshaped(player.force, "change a function") end
   elseif t.logf == "group-name" then
     local name = t.names and t.names[element.selected_index]
     if name then
       node_at(def, t.path)[2] = sexp.str(name)
-      changed(player.force)
+      changed(player.force, "choose a group")
     end
   elseif t.logf == "choice" then
     set_node(def, t.path, sexp.sym(t.names[element.selected_index]))
-    changed(player.force)
+    changed(player.force, "choose a value")
   end
 end
 
@@ -1963,26 +2055,26 @@ function fgui.on_elem_changed(event)
   if t.logf == "item-signal" then
     if not value then return remove_item(player, t, def) end
     form[t.pair] = sexp.sym(signal_token(value))
-    changed(player.force)
+    changed(player.force, "change a signal")
   elseif t.logf == "recipe-pick" then
     -- Clearing the picker keeps the recipe; a recipe parameter is never empty.
     if value then set_node(def, t.path, sexp.sym(value)) end
-    changed(player.force)
+    changed(player.force, "choose a recipe")
   elseif t.logf == "filter-pick" then
     local parent, index = parent_of(def, t.path)
     local spec = lang.functions[parent[1].sym]
     if value then set_node(def, t.path, sexp.sym(signal_token(value)))
     elseif #parent - 1 > #spec.params then table.remove(parent, index) end
-    changed(player.force)
+    changed(player.force, "change a filter")
   elseif t.logf == "filter-add" and value then
     form[#form + 1] = sexp.sym(signal_token(value))
-    changed(player.force)
+    changed(player.force, "add a filter")
   elseif t.logf == "item-add" and value then
     form[#form + 1] = sexp.sym(signal_token(value))
     form[#form + 1] = 1
     -- The new signal opens for its count.
     edit_item(player, def, t.path, #form - 1)
-    changed(player.force)
+    changed(player.force, "add a signal")
   end
 end
 
@@ -2017,6 +2109,9 @@ function fgui.on_text_changed(event)
   if t.logf == "number" then set_node(def, t.path, n)
   elseif t.logf == "item-count" then node_at(def, t.path)[t.pair + 1] = n
   else return end
+  -- Typing in one field is one change.
+  program.record(sheet_of(player), t.logf == "number" and "change a number" or "change a count",
+    table.concat({t.logf, def.name, table.concat(t.path, ","), t.pair or ""}, "/"))
   program.run(player.force)
 end
 
@@ -2029,7 +2124,7 @@ local function rename_def(player, def, name)
   if state.step and state.step.name == def.name then state.step.name = name end
   if state.sexp_edit and state.sexp_edit.def == def.name then state.sexp_edit.def = name end
   def.name = name
-  changed(player.force)
+  changed(player.force, "rename a definition")
 end
 
 local function set_prefix(player, prefix)
@@ -2068,9 +2163,11 @@ function fgui.on_confirmed(event)
   if t.logf == "rename" and def then
     rename_def(player, def, element.text)
   elseif t.logf == "number" then
+    program.end_merge(sheet_of(player))
     rebuild(player.force)
   elseif t.logf == "item-count" then
     -- Enter applies the count and closes the signal's editor.
+    program.end_merge(sheet_of(player))
     ui(player).item_edit = nil
     rebuild(player.force)
   elseif t.logf == "prefix" then
