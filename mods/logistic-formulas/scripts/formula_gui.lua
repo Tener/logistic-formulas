@@ -987,7 +987,8 @@ local function update_actions(actions, state, def_index, def, path)
 end
 
 -- A formula in a change description: highlighted, or cut short as plain text when long.
-local CHANGE_WIDTH = 60
+-- Tooltips are at most 356 pixels wide, about 46 characters with the indent.
+local CHANGE_WIDTH = 46
 local function change_form(form)
   local plain = sexp.print(form)
   if #plain <= CHANGE_WIDTH then return sexp.print(form, paint) end
@@ -999,28 +1000,30 @@ end
 
 local CHANGE_LINES = 4
 
--- What a change did, one line per definition it touched.
+-- What a change did, a few lines per definition it touched: what happened, then the
+-- formula before and after, each on its own line so the narrow tooltip does not wrap them.
 local function describe_change(change)
-  local lines = {}
+  local blocks = {}
   local function name(text) return "[font=default-semibold]" .. text .. "[/font]" end
+  local function before_after(old, new) return "\n   " .. change_form(old) .. "\n→ " .. change_form(new) end
   for _, c in ipairs(changes.describe(change.before, change.after)) do
-    local line
-    if c.kind == "prefix" then line = "prefix: " .. c.old .. " → " .. c.new
-    elseif c.kind == "add" then line = "added " .. name(c.name) .. ": " .. change_form(c.new)
-    elseif c.kind == "remove" then line = "deleted " .. name(c.name)
+    local block
+    if c.kind == "prefix" then block = "prefix: " .. c.old .. " → " .. c.new
+    elseif c.kind == "add" then block = "added " .. name(c.name) .. "\n   " .. change_form(c.new)
+    elseif c.kind == "remove" then block = "deleted " .. name(c.name)
     elseif c.kind == "rename" then
-      line = "renamed " .. name(c.old_name) .. " → " .. name(c.name)
-      if c.old then line = line .. ": " .. change_form(c.old) .. " → " .. change_form(c.new) end
-    elseif c.kind == "change" then line = name(c.name) .. ": " .. change_form(c.old) .. " → " .. change_form(c.new)
-    elseif c.kind == "move" then line = name(c.name) .. ": moved from place " .. c.from .. " to " .. c.to end
-    lines[#lines + 1] = line
+      block = "renamed " .. name(c.old_name) .. " → " .. name(c.name)
+      if c.old then block = block .. before_after(c.old, c.new) end
+    elseif c.kind == "change" then block = name(c.name) .. before_after(c.old, c.new)
+    elseif c.kind == "move" then block = name(c.name) .. " moved from place " .. c.from .. " to " .. c.to end
+    blocks[#blocks + 1] = block
   end
-  if #lines > CHANGE_LINES then
-    local more = #lines - CHANGE_LINES + 1
-    for i = #lines, CHANGE_LINES, -1 do lines[i] = nil end
-    lines[#lines + 1] = "and " .. more .. " more"
+  if #blocks > CHANGE_LINES then
+    local more = #blocks - CHANGE_LINES + 1
+    for i = #blocks, CHANGE_LINES, -1 do blocks[i] = nil end
+    blocks[#blocks + 1] = "and " .. more .. " more"
   end
-  return table.concat(lines, "\n")
+  return table.concat(blocks, "\n")
 end
 
 -- Enables the undo and redo buttons of a sheet bar, with tooltips naming the change.
@@ -1061,8 +1064,12 @@ function build_editor(content, player, sheet)
     tooltip = {"logf-ui.search-tooltip"},
     tags = {logf = "search"}}
   search.style.width = 110
-  local gap = bar.add{type = "empty-widget"}
-  gap.style.horizontally_stretchable = true
+  -- Undo and redo in the middle, between two stretching gaps.
+  bar.add{type = "empty-widget"}.style.horizontally_stretchable = true
+  bar.add{type = "button", name = "undo", caption = "[img=logf-undo] Undo", tags = {logf = "undo"}}
+  bar.add{type = "button", name = "redo", caption = "[img=logf-redo] Redo", tags = {logf = "redo"}}
+  update_history(bar, sheet)
+  bar.add{type = "empty-widget"}.style.horizontally_stretchable = true
   local prefix_tooltip = "Put in front of the name of every group this sheet computes.\n"
     .. "Rich text such as [virtual-signal=signal-F] shows as an icon. Groups still in use under the old prefix keep their last contents."
   bar.add{type = "label", caption = "Prefix", tooltip = prefix_tooltip}
@@ -1071,11 +1078,6 @@ function build_editor(content, player, sheet)
     "prefix", prefix_tooltip, {sheet = sheet.id}, 140)
   bar.add{type = "label", name = "prefix_example", caption = "→ " .. sheet.prefix .. "mall",
     tooltip = "How a group named \"mall\" is called in the game"}
-  local undo = bar.add{type = "sprite-button", name = "undo", style = "tool_button", sprite = "logf-undo", tags = {logf = "undo"}}
-  local redo = bar.add{type = "sprite-button", name = "redo", style = "tool_button", sprite = "logf-redo", tags = {logf = "redo"}}
-  undo.style.left_margin = 8
-  redo.style.right_margin = 8
-  update_history(bar, sheet)
   bar.add{type = "button", caption = "Edit as text", tooltip = "Edit this sheet as S-expressions, for bulk edits and sharing",
     tags = {logf = "text-open"}}
   bar.add{type = "button", caption = "?",
