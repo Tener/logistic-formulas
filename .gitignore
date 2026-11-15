@@ -1,0 +1,6 @@
+.factorio-test/
+mods/mod-settings.dat
+dist/
+tmp/
+.DS_Store
+__pycache__/

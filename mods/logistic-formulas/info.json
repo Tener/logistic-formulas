@@ -1,0 +1,11 @@
+{
+  "name": "logistic-formulas",
+  "version": "0.1.0",
+  "title": "Logistic Formulas",
+  "author": "Tener",
+  "description": "Logistic groups computed by formulas from other groups, logistic networks and recipes: sums, scaling, quality shifts, stack rounding, request limits and import locations, organized in sheets and kept up to date as their sources change.",
+  "factorio_version": "2.1",
+  "dependencies": ["base >= 2.1.0", "space-age >= 2.1.0", "quality >= 2.1.0"],
+  "space_travel_required": true,
+  "quality_required": true
+}

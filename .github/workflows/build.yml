@@ -1,0 +1,82 @@
+# Builds the mod zip and portal description on pushes to main and version tags.
+# Version tags attach the mod zip and plain Markdown description to a GitHub release.
+# Hardening: no pull request triggers, no secrets beyond the job token, a read-only token
+# except when creating a release, actions pinned to commits, no workflow expressions inside
+# shell scripts.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 tools/release.py check --tag "$RELEASE_TAG"
+      - name: Name artifacts
+        id: artifact
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
+        # the info.json version, and on branch builds the commit as well
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("mods/logistic-formulas/info.json"))["version"])')
+          [ "$REF_TYPE" = tag ] || version="$version-${SHA::7}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Package
+        run: tools/package.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logistic-formulas_${{ steps.artifact.outputs.version }}
+          path: dist/*.zip
+          if-no-files-found: error
+      - name: Prepare portal description
+        env:
+          DESCRIPTION_REF: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: python3 tools/prepare-portal-description.py "$DESCRIPTION_REF"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logistic-formulas-mod-portal-description_${{ steps.artifact.outputs.version }}
+          path: dist/mod-portal.md
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Package and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 tools/release.py notes --tag "$TAG"
+          tools/package.sh
+          python3 tools/prepare-portal-description.py "$TAG"
+          zip="dist/logistic-formulas_${TAG#v}.zip"
+          # the tag must match the version in info.json
+          [ -f "$zip" ] || { echo "tag $TAG does not match info.json version"; ls dist; exit 1; }
+          gh release create "$TAG" "$zip" dist/mod-portal.md --verify-tag --title "$TAG" --notes-file dist/release-notes.md
