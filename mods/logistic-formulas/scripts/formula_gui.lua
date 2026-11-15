@@ -10,7 +10,7 @@ local docs = require("scripts.docs")
 local fgui = {}
 
 local WINDOW = "logf_window"
-local network_parts, apply_size, sheet_caption, build_editor, editable_label, sync_opened
+local network_parts, apply_size, sheet_caption, build_editor, editable_label, sync_opened, fill_text
 local TOOLTIP_LINES = 40
 local INDENT = 24
 local DEF_DELETE_TOOLTIP = "Delete the definition (click twice). Groups still in use keep their last contents."
@@ -50,33 +50,17 @@ local function pretty_sexp(form, indent)
   return table.concat(parts, "\n") .. ")"
 end
 
--- Formats an S-expression with Factorio rich-text color tags for syntax highlighting.
-local function highlight_token(form)
-  if type(form) == "number" then
-    return "[color=255,205,105]" .. sexp.print(form) .. "[/color]"
-  end
-  if sexp.is_str(form) then
-    return '[color=165,235,150]"' .. form.str:gsub('[\\"]', "\\%0") .. '"[/color]'
-  end
-  if sexp.is_sym(form) then
-    local c = FN_COLOR[form.sym]
-    if c then return "[color=" .. c .. "][font=default-semibold]" .. form.sym .. "[/font][/color]" end
-    return "[color=225,228,240]" .. form.sym .. "[/color]"
-  end
-  return sexp.print(form)
+-- Rich-text colors for sexp's printer: function names in their family's color.
+local function paint(kind, text)
+  if kind == "number" then return "[color=255,205,105]" .. text .. "[/color]" end
+  if kind == "string" then return "[color=165,235,150]" .. text .. "[/color]" end
+  if kind == "bracket" then return "[color=140,145,160]" .. text .. "[/color]" end
+  local c = FN_COLOR[text]
+  if c then return "[color=" .. c .. "][font=default-semibold]" .. text .. "[/font][/color]" end
+  return "[color=225,228,240]" .. text .. "[/color]"
 end
 
-local function highlight_flat(form)
-  if not sexp.is_list(form) then return highlight_token(form) end
-  if sexp.is_sym(form[1], "constant") then
-    local parts = {}
-    for i = 2, #form do parts[#parts + 1] = highlight_flat(form[i]) end
-    return "[color=140,145,160]{[/color]" .. table.concat(parts, " ") .. "[color=140,145,160]}[/color]"
-  end
-  local parts = {}
-  for i = 1, #form do parts[i] = highlight_flat(form[i]) end
-  return "[color=140,145,160]([/color]" .. table.concat(parts, " ") .. "[color=140,145,160])[/color]"
-end
+local function highlight_flat(form) return sexp.print(form, paint) end
 
 local function highlight_sexp(form, indent)
   indent = indent or ""
@@ -1083,6 +1067,45 @@ function build_editor(content, player, sheet)
   build_tree(tree, player)
 end
 
+-- The text window's contents: the sheet highlighted, or, while editing, a text box.
+-- `message` goes in the bar below.
+function fill_text(player, editing, message)
+  local w = text_window(player)
+  local wt = w.tags
+  wt.editing, wt.confirm_empty = editing, nil
+  w.tags = wt
+  local sheet = program.sheet(player.force, wt.sheet)
+  local text = w.text_view
+  text.clear()
+  if editing then
+    local box = text.add{type = "text-box", name = "box", text = program.text(sheet)}
+    box.word_wrap = false
+    box.style.width = 720
+    box.style.height = 480
+    box.focus()
+  else
+    local view = text.add{type = "scroll-pane", name = "view", style = "deep_scroll_pane"}
+    view.style.width = 720
+    view.style.height = 480
+    view.style.padding = 8
+    local caption = sexp.print_program(program.forms_from_defs(sheet.defs), paint)
+    local code = view.add{type = "label", name = "code", caption = caption ~= "" and caption or "[color=0.6,0.6,0.6]No definitions[/color]",
+      tooltip = "Click to edit", tags = {logf = "text-edit"}}
+    code.style.single_line = false
+  end
+  local actions = text.add{type = "flow", name = "bar", direction = "horizontal"}
+  actions.style.vertical_align = "center"
+  if editing then
+    actions.add{type = "button", name = "apply", style = "confirm_button_without_tooltip", caption = "Apply", tags = {logf = "apply"}}
+    actions.add{type = "button", caption = "Revert", tooltip = "Discard edits and show the current sheet", tags = {logf = "revert"}}
+  else
+    actions.add{type = "button", name = "edit", caption = "Edit", tags = {logf = "text-edit"}}
+  end
+  local label = actions.add{type = "label", name = "message", caption = message}
+  label.style.maximal_width = 520
+  label.style.single_line = false
+end
+
 -- The text editor for a sheet, as a separate window.
 function fgui.open_text(player)
   if text_window(player) then text_window(player).destroy() end
@@ -1097,18 +1120,8 @@ function fgui.open_text(player)
   drag.style.horizontally_stretchable = true
   drag.style.height = 24
   titlebar.add{type = "sprite-button", style = "close_button", sprite = "utility/close", tags = {logf = "text-close"}}
-  local text = w.add{type = "frame", name = "text_view", style = "inside_shallow_frame_with_padding", direction = "vertical"}
-  local box = text.add{type = "text-box", name = "box", text = program.text(sheet)}
-  box.word_wrap = false
-  box.style.width = 720
-  box.style.height = 480
-  local actions = text.add{type = "flow", name = "bar", direction = "horizontal"}
-  actions.style.vertical_align = "center"
-  actions.add{type = "button", name = "apply", style = "confirm_button_without_tooltip", caption = "Apply", tags = {logf = "apply"}}
-  actions.add{type = "button", caption = "Revert", tooltip = "Discard edits and show the current sheet", tags = {logf = "revert"}}
-  local message = actions.add{type = "label", name = "message"}
-  message.style.maximal_width = 520
-  message.style.single_line = false
+  w.add{type = "frame", name = "text_view", style = "inside_shallow_frame_with_padding", direction = "vertical"}
+  fill_text(player, false)
   -- The text window becomes the opened GUI, so Escape closes it and not the main window.
   local state = ui(player)
   state.switching = true
@@ -1445,9 +1458,18 @@ local function text_of(player)
   return w and w.text_view
 end
 
+-- A text window follows edits to its sheet, unless the player is editing the text.
+local function refresh_text(player)
+  local w = text_window(player)
+  if w and not w.tags.editing and program.sheet(player.force, w.tags.sheet) then
+    fill_text(player, false, w.text_view.bar.message.caption)
+  end
+end
+
 -- Rebuilds the tree for every player of the force with the window open.
 local function rebuild(force)
   for _, player in pairs(force.connected_players) do
+    refresh_text(player)
     local tree = tree_of(player)
     if tree then
       build_tree(tree, player)
@@ -1460,6 +1482,7 @@ end
 -- being typed in keep focus.
 local function refresh_results(force)
   for _, player in pairs(force.connected_players) do
+    refresh_text(player)
     local tree = tree_of(player)
     if tree then
       local sheet = sheet_of(player)
@@ -1622,20 +1645,19 @@ function CLICK.apply(player)
   wt.confirm_empty = nil
   win.tags = wt
   program.set_text(player.force, sheet, text.box.text)
-  text.bar.message.caption = "Applied."
-  text.box.text = program.text(sheet)
+  fill_text(player, false, "Applied.")
   reshaped(player.force)
 end
 
 function CLICK.revert(player)
-  local win, text = text_window(player), text_of(player)
-  local wt = win.tags
-  local sheet = program.sheet(player.force, wt.sheet)
-  if not sheet then return end
-  wt.confirm_empty = nil
-  win.tags = wt
-  text.box.text = program.text(sheet)
-  text.bar.message.caption = ""
+  local win = text_window(player)
+  if not program.sheet(player.force, win.tags.sheet) then return end
+  fill_text(player, false)
+end
+
+CLICK["text-edit"] = function(player)
+  if not program.sheet(player.force, text_window(player).tags.sheet) then return fgui.open_text(player) end
+  fill_text(player, true)
 end
 
 CLICK["factoriopedia"] = function(player)

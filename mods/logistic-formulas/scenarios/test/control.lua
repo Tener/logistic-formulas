@@ -785,13 +785,19 @@ CASES.editor = function(tick)
   fire("on_click", find(bar, {logf = "expand-all"}))
   assert(not el{logf = "def-value", name = "mall up"}.tags.inline, "expanded again")
 
-  -- The text editor opens beside the window: shows the sheet, applies edits, reports errors without applying.
+  -- The text window opens beside the window, showing the sheet highlighted; Edit turns it into
+  -- a text box that applies edits and reports errors without applying.
   fire("on_click", find(editor_in(w).bar, {logf = "text-open"}))
   local text = assert(player.gui.screen.logf_text, "text window opens").text_view
-  assert(text.box.text == call("program_text", "player"), "text view shows the program")
+  assert(text.view.code.caption:find("[color=", 1, true) and not text.box, "the sheet shows highlighted")
+  fire("on_click", text.bar.edit)
+  assert(text.box.text == call("program_text", "player"), "the text box holds the program")
   text.box.text = '(def "mall up" (set-stacks (group "mall")))'
   fire("on_click", find(text, {logf = "apply"}))
   expect_group("mall up", {["item/iron-plate/normal"] = 100, ["item/pipe/rare"] = 100})
+  assert(not text.box and text.view.code.caption:find("mall up", 1, true), "applying shows the new text highlighted")
+  assert(text.bar.message.caption == "Applied.", "applying says so")
+  fire("on_click", text.view.code)
   assert(#call("program_status", "player") == 1, "apply replaces the program")
   tree = editor_in(w).scroll.tree
   local fn_node = find(tree, {logf = "function", def = 1, path = {}})
@@ -810,12 +816,15 @@ CASES.editor = function(tick)
   fire("on_click", find(text, {logf = "apply"}))
   assert(#call("program_status", "player") == 1, "re-arming after clicking elsewhere still asks again")
   fire("on_click", find(text, {logf = "revert"}))
-  assert(text.box.text == '(def "mall up" (set-stacks (group "mall")))', "revert restores definitions")
+  assert(not text.box and text.view.code.caption:find("mall up", 1, true), "revert shows the sheet again")
+  fire("on_click", text.bar.edit)
+  assert(text.box.text == '(def "mall up" (set-stacks (group "mall")))', "revert keeps the definitions")
   text.box.text = ""
   fire("on_click", find(text, {logf = "apply"}))
   assert(#call("program_status", "player") == 1, "revert clears pending wipe confirmation")
   fire("on_click", find(text, {logf = "apply"}))
   assert(#call("program_status", "player") == 0 and not group("mall up"), "second empty apply wipes and cleans up")
+  fire("on_click", text.bar.edit)
   text.box.text = '(def "mall up" (set-stacks (group "mall")))'
   fire("on_click", find(text, {logf = "apply"}))
   expect_group("mall up", {["item/iron-plate/normal"] = 100, ["item/pipe/rare"] = 100})

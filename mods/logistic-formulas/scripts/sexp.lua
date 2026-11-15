@@ -95,38 +95,44 @@ local function number_text(n)
   return string.format("%.10g", n)
 end
 
-local function flat(form)
-  if type(form) == "number" then return number_text(form) end
-  if form.sym then return form.sym end
-  if form.str then return '"' .. form.str:gsub('[\\"]', "\\%0") .. '"' end
+-- `paint(kind, text)` decorates each token: "number", "string", "symbol" or "bracket".
+local function plain(_, text) return text end
+
+local function flat(form, paint)
+  if type(form) == "number" then return paint("number", number_text(form)) end
+  if form.sym then return paint("symbol", form.sym) end
+  if form.str then return paint("string", '"' .. form.str:gsub('[\\"]', "\\%0") .. '"') end
   local parts = {}
   local braces = sexp.is_sym(form[1], "constant")
-  for i = braces and 2 or 1, #form do parts[#parts + 1] = flat(form[i]) end
+  for i = braces and 2 or 1, #form do parts[#parts + 1] = flat(form[i], paint) end
   local body = table.concat(parts, " ")
-  return braces and "{" .. body .. "}" or "(" .. body .. ")"
+  if braces then return paint("bracket", "{") .. body .. paint("bracket", "}") end
+  return paint("bracket", "(") .. body .. paint("bracket", ")")
 end
 
 local WIDTH = 80
 
 -- One line when it fits, otherwise the head on the first line and one argument per line.
-local function pretty(form, indent)
-  local line = flat(form)
-  if not sexp.is_list(form) or #line + #indent <= WIDTH or sexp.is_sym(form[1], "constant") or #form < 2 then return line end
+local function pretty(form, indent, paint)
+  local line = flat(form, plain)
+  if not sexp.is_list(form) or #line + #indent <= WIDTH or sexp.is_sym(form[1], "constant") or #form < 2 then
+    return flat(form, paint)
+  end
   local inner = indent .. "  "
-  local parts = {"(" .. flat(form[1])}
+  local parts = {paint("bracket", "(") .. flat(form[1], paint)}
   local first = 2
   -- Keep a def's name beside the keyword.
-  if sexp.is_sym(form[1], "def") and form[2] then parts[1] = parts[1] .. " " .. flat(form[2]); first = 3 end
-  for i = first, #form do parts[#parts + 1] = inner .. pretty(form[i], inner) end
-  return table.concat(parts, "\n") .. ")"
+  if sexp.is_sym(form[1], "def") and form[2] then parts[1] = parts[1] .. " " .. flat(form[2], paint); first = 3 end
+  for i = first, #form do parts[#parts + 1] = inner .. pretty(form[i], inner, paint) end
+  return table.concat(parts, "\n") .. paint("bracket", ")")
 end
 
-function sexp.print(form) return flat(form) end
+function sexp.print(form, paint) return flat(form, paint or plain) end
 
 -- Prints top-level forms one per paragraph.
-function sexp.print_program(forms)
+function sexp.print_program(forms, paint)
   local out = {}
-  for _, form in ipairs(forms) do out[#out + 1] = pretty(form, "") end
+  for _, form in ipairs(forms) do out[#out + 1] = pretty(form, "", paint or plain) end
   return table.concat(out, "\n")
 end
 
